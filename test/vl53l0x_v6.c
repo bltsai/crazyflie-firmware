@@ -55,8 +55,8 @@ static float expCoeff;
 #define RANGE_OUTLIER_LIMIT   1800 // the measured range is in [mm]
 #define CORRIDOR_HEIGHT       2650
 
-#define RAW_DATA_FRAME_NUM    1
-#define BG_FRAME_NUM          100
+#define RAW_DATA_FRAME_NUM    5
+#define BG_FRAME_NUM          20
 #define PEAK_THREHOLD         1.5f
 
 #define LEFT_UP      7
@@ -76,8 +76,7 @@ static uint16_t timeout_start_ms;
 
 uint16_t range_last = 0;
 uint16_t range_last_down = 0;
-uint16_t range_last_front_l = 0;
-uint16_t range_last_front_r = 0;
+uint16_t range_last_front = 0;
 // uint16_t range_last_top = 0;
 
 // Record the current time to check an upcoming timeout against
@@ -149,14 +148,15 @@ static uint16_t vl53l0xReadReg16Bit(uint8_t reg);
 static bool vl53l0xWriteReg16Bit(uint8_t reg, uint16_t val);
 static bool vl53l0xWriteReg32Bit(uint8_t reg, uint32_t val);
 
-// static float roomTemp = 0;
+static float roomTemp = 0;
+static float roll = 0;
+static float pitch = 0;
 
 static uint32_t yellowGroupH = 0;
 static uint32_t yellowGroupL = 0;
 static uint32_t orangeGroupH = 0;
 static uint32_t orangeGroupL = 0;
-static uint32_t redGroupH = 0;
-static uint32_t redGroupL = 0;
+
 
 static uint8_t  rawDataFrameIndex = 0;
 static float    rawData[64*RAW_DATA_FRAME_NUM] = {0};
@@ -164,41 +164,28 @@ static uint8_t  bgFrameIndex = 0;
 static float    bgData[64*BG_FRAME_NUM] = {0};
 
 static bool isCalibrate = false;
-static bool checkCalibrate = false;
 static float avgCal[64] = {0};
-static float squareAvg[64] = {0};
 static float stdCal[64] = {0};
 static float zscoreData[64*RAW_DATA_FRAME_NUM] = {0};
 static float zscore[64] = {0.0f};
 static float x_weight_coordinate = 0.0f;
 static float y_weight_coordinate = 0.0f;
-static float xh_weight_coordinate = 0.0f;
-static float yh_weight_coordinate = 0.0f;
-// static int16_t z_total_heat = 0;
-// static int16_t zscore_int16_t[64] = {0};
+static int16_t z_total_heat = 0;
+static int16_t zscore_int16_t[64] = {0};
 static int16_t z_max = 0;
 static int16_t z_min = 0;
 static bool zscoreWeight[64] = {false};
 
 static float zscore_threshold_high = 10.0f;
 static float zscore_threshold_low = 5.0f;
-static float zscore_threshold_hot = 35.0f;
-static float zscore_threshold_recal = 10.0f;
-static bool zcal = true;
 
-static void reset_log_variable(uint8_t* color);
-static void clear_zscore_weight();
-static bool check_neighbor_zscore_weight(int index);
 static void rotateColor(uint8_t* color, uint8_t* rColor);
 static void labelPixel(int* largestSubset ,int maxSubsetLen, uint8_t* color);
 static void findGroup(uint8_t* color);
 static bool check_p2p();
-static void copy_to_bgData();
-static void fast_calibration();
 static void calibration();
 static void zscoreCalculation();
-static void get_four_neighbor(int loc, int* neighbor);
-static void get_eight_neighbor(int loc, int* neighbor);
+static void get_neighbor(int loc, int* neighbor);
 static bool label_neighbor(int result[], int subsetNumber);
 static void label_subset(int testset[], int testsetLen, int result[], int subsetNumber);
 static bool get_startIndex(int testset[], int testsetLen, int result[], int* startIndex);
@@ -206,9 +193,8 @@ static void select_largest_subset(int testset[], int testsetLen, int result[], i
 static void find_largestSubset(int testset[], int testsetLen, int* maxSubsetLen, int* largestSubset);
 static void get_largest_subset(int* largestSubset, int* maxSubsetLen);
 // static void rotateXY();
-static void get_filtered_xy(int* largestSubset, int maxSubsetLen);
 static void get_xy(int* largestSubset, int maxSubsetLen);
-// static void get_total_heat(int* largestSubset, int maxSubsetLen);
+static void get_total_heat(int* largestSubset, int maxSubsetLen);
 
 /** Default constructor, uses default I2C address.
  * @see VL53L0X_DEFAULT_ADDRESS
@@ -222,7 +208,7 @@ void vl53l0xInit(DeckInfo* info)
   i2cdevInit(I2C1_DEV);
   I2Cx = I2C1_DEV;
   devAddr = VL53L0X_DEFAULT_ADDRESS;
-  i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
+  i2cdevWriteByte(I2Cx, TCAADDR, 0x80, 0x80);
   xTaskCreate(vl53l0xTask, VL53_TASK_NAME, VL53_TASK_STACKSIZE, NULL, VL53_TASK_PRI, NULL);
 
   // pre-compute constant in the measurement noise model for kalman
@@ -239,7 +225,7 @@ bool vl53l0xTest(void)
     return false;
        // Measurement noise model
   int addresses[] = {0x80, 0x10, 0x04};
-  for (int i=0; i<3; i++){
+  for (int i=0; i<2; i++){
     i2cdevWriteByte(I2Cx, TCAADDR, addresses[i], addresses[i]);
     testStatus  = vl53l0xTestConnection();
     testStatus &= vl53l0xInitSensor(true);
@@ -253,7 +239,7 @@ void vl53l0xTask(void* arg)
   systemWaitStart();
   TickType_t xLastWakeTime;
   int addresses[] = {0x80, 0x10, 0x04}; // 0x80 down, 0x10 front, 0x04 top
-  for (int i=0; i<3; i++){
+  for (int i=0; i<2; i++){
     i2cdevWriteByte(I2Cx, TCAADDR, addresses[i], addresses[i]);
     vl53l0xSetVcselPulsePeriod(VcselPeriodPreRange, 18);
     vl53l0xSetVcselPulsePeriod(VcselPeriodFinalRange, 14);
@@ -266,9 +252,9 @@ void vl53l0xTask(void* arg)
     i2cdevWriteByte(I2Cx, TCAADDR, 0x80, 0x80);
     range_last_down = vl53l0xReadRangeContinuousMillimeters();
     i2cdevWriteByte(I2Cx, TCAADDR, 0x10, 0x10);
-    range_last_front_l = vl53l0xReadRangeContinuousMillimeters();
-    i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
-    range_last_front_r = vl53l0xReadRangeContinuousMillimeters();
+    range_last_front = vl53l0xReadRangeContinuousMillimeters();
+    // i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
+    // range_last_top = vl53l0xReadRangeContinuousMillimeters();
 
     if (range_last_down < RANGE_OUTLIER_LIMIT) {
       range_last = range_last_down;
@@ -298,27 +284,15 @@ void vl53l0xTask(void* arg)
             int map_index = i - (64*bgFrameIndex);
             bgData[i] = ((data[map_index*2+1] << 8) | data[map_index*2]) * 0.25f;
         }
+        bgFrameIndex += 1;
 
-        if (bgFrameIndex == BG_FRAME_NUM-1) {
+        if (bgFrameIndex == BG_FRAME_NUM) {
           calibration();
           if (check_p2p()) {
             isCalibrate = true;
           } else {
             bgFrameIndex = 0;
           }
-        }
-        bgFrameIndex = (bgFrameIndex+1)%BG_FRAME_NUM;
-
-    } else if (!checkCalibrate) {
-        for(int i=0;i<64;i++){
-            rawData[i] = ((data[i*2+1] << 8) | data[i*2]) * 0.25f;
-        }
-        zscoreCalculation();
-
-        if (z_max > 800 || z_min < -800) { // ensure that the initial zscore is between 8 and -8.
-            isCalibrate = false;
-        } else {
-            checkCalibrate = true;
         }
 
     } else {
@@ -328,36 +302,20 @@ void vl53l0xTask(void* arg)
             rawData[i] = ((data[map_index*2+1] << 8) | data[map_index*2]) * 0.25f;
         }
         zscoreCalculation();
+        rawDataFrameIndex += 1;
 
         uint8_t color[64]={0};
         uint8_t rColor[64]={0};
         int largestSubset[64] = {-1};
         int maxSubsetLen = 0;
         get_largest_subset(largestSubset, &maxSubsetLen);
+        get_xy(largestSubset, maxSubsetLen);
+        get_total_heat(largestSubset, maxSubsetLen);
+        //rotateXY();
+        labelPixel(largestSubset, maxSubsetLen, color);
+        rotateColor(color, rColor);
+        findGroup(rColor);
 
-        reset_log_variable(color);
-
-        if (maxSubsetLen > 1) {
-            if (z_max > zscore_threshold_hot) {
-                get_filtered_xy(largestSubset, maxSubsetLen);
-            } else if (z_max > zscore_threshold_low) {
-                get_xy(largestSubset, maxSubsetLen);
-                // get_total_heat(largestSubset, maxSubsetLen);
-            }
-            //rotateXY();
-            labelPixel(largestSubset, maxSubsetLen, color);
-            rotateColor(color, rColor);
-            findGroup(rColor);
-        } else {
-            clear_zscore_weight();
-            if (zcal && z_max < zscore_threshold_recal) {
-                copy_to_bgData();
-                fast_calibration();
-                bgFrameIndex = (bgFrameIndex+1)%BG_FRAME_NUM;
-            }
-        }
-
-        rawDataFrameIndex += 1;
     }
 
 
@@ -1334,27 +1292,6 @@ bool check_p2p() {
   return true;
 }
 
-void copy_to_bgData() {
-  for(int i=0; i<64; i++) {
-    bgData[i+64*bgFrameIndex] = rawData[i+64*rawDataFrameIndex];
-  }
-}
-
-void fast_calibration() {
-  int latest_p = 64*bgFrameIndex;
-  int earliest_p = 64*(bgFrameIndex+1);
-  if (bgFrameIndex == BG_FRAME_NUM-1) {
-    earliest_p = 0;
-  }
-  for(int i=0; i<64; i++) {
-    avgCal[i] = avgCal[i] - bgData[i+earliest_p]/BG_FRAME_NUM + bgData[i+latest_p]/BG_FRAME_NUM;
-    squareAvg[i] = squareAvg[i] - powf(bgData[i+earliest_p], 2)/BG_FRAME_NUM + powf(bgData[i+latest_p], 2)/BG_FRAME_NUM;
-  }
-  for(int i=0; i<64; i++) {
-    stdCal[i] = sqrtf(squareAvg[i]-powf(avgCal[i], 2));
-  }
-}
-
 void calibration() {
   for(int i=0; i<64; i++) {
     float tempSum = 0;
@@ -1365,20 +1302,16 @@ void calibration() {
   }
 
   for(int i=0; i<64; i++) {
-    // float tempSum = 0;
-    float tempSquareSum = 0;
+    float tempSum = 0;
     for(int j=0; j<BG_FRAME_NUM; j++) {
-      // tempSum += powf(bgData[i+j*64]-avgCal[i], 2);
-      tempSquareSum += powf(bgData[i+j*64],2)/BG_FRAME_NUM;
+      tempSum += powf(bgData[i+j*64]-avgCal[i], 2);
     }
-    squareAvg[i] = tempSquareSum;
-    stdCal[i] = sqrtf(squareAvg[i]-powf(avgCal[i], 2));
-    // stdCal[i] = sqrtf(tempSum/ BG_FRAME_NUM);
+    stdCal[i] = sqrtf(tempSum/ BG_FRAME_NUM);
   }
 }
 
 void zscoreCalculation() {
-  float tempMax = -30.0f;
+  float tempMax = 0.0f;
   float tempMin = 30.0f;
   for(int i=0; i<64; i++) {
     float tempSum = 0;
@@ -1394,7 +1327,7 @@ void zscoreCalculation() {
       tempSum += zscoreData[i+j*64];
     }
     zscore[i] = tempSum / RAW_DATA_FRAME_NUM;
-    // zscore_int16_t[i] = (int)(zscore[i]*100);
+    zscore_int16_t[i] = (int)(zscore[i]*100);
 
     if(zscore[i] > tempMax) {
       tempMax = zscore[i];
@@ -1420,36 +1353,15 @@ void rotateColor(uint8_t* color, uint8_t* rColor)
 
 }
 
-void reset_log_variable(uint8_t* color)
+void labelPixel(int* largestSubset, int maxSubsetLen, uint8_t* color)
 {
     for(int i=0; i<64; i++) {
         color[i] = WHITE;
     }
 
-    x_weight_coordinate = -1.0;
-    y_weight_coordinate = -1.0;
-    xh_weight_coordinate = -1.0;
-    yh_weight_coordinate = -1.0;
-
-    yellowGroupH = 0;
-    yellowGroupL = 0;
-    orangeGroupH = 0;
-    orangeGroupL = 0;
-    redGroupH = 0;
-    redGroupL = 0;
-}
-
-void labelPixel(int* largestSubset, int maxSubsetLen, uint8_t* color)
-{
     for(int i=0; i<maxSubsetLen; i++) {
         int pixelIndex = largestSubset[i];
-        if (zscore[pixelIndex] > zscore_threshold_hot) {
-            color[pixelIndex] = RED;
-        } else if (zscore[pixelIndex] > zscore_threshold_high) {
-            color[pixelIndex] = ORANGE;
-        } else if (zscore[pixelIndex] > zscore_threshold_low) {
-            color[pixelIndex] = YELLOW;
-        }
+        color[pixelIndex] = ORANGE;
     }
 /*
     for(int i=0; i<64; i++){
@@ -1473,28 +1385,28 @@ void labelPixel(int* largestSubset, int maxSubsetLen, uint8_t* color)
 
 void findGroup(uint8_t* color)
 {
+    yellowGroupH = 0;
+    yellowGroupL = 0;
+    orangeGroupH = 0;
+    orangeGroupL = 0;
     for(int i=0; i<32; i++){
         uint8_t cl = color[i];
         if(cl == YELLOW){
             yellowGroupL |= 1<<i;
         }else if(cl == ORANGE){
             orangeGroupL |= 1<<i;
-        }else if(cl == RED){
-            redGroupL |= 1<<i;
         }
         cl = color[i+32];
         if(cl == YELLOW){
             yellowGroupH |= 1<<i;
         }else if(cl == ORANGE){
             orangeGroupH |= 1<<i;
-        }else if(cl == RED){
-            redGroupH |= 1<<i;
         }
     }
 }
 
 
-void get_eight_neighbor(int loc, int* neighbor) //neighbor length maximum is 8
+void get_neighbor(int loc, int* neighbor) //neighbor length maximum is 8
 {
         if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)==0){
             neighbor[0]=loc+1; neighbor[1]=loc+ARRAY_SIZE; neighbor[2]=loc+ARRAY_SIZE+1;
@@ -1517,35 +1429,35 @@ void get_eight_neighbor(int loc, int* neighbor) //neighbor length maximum is 8
         }
 }
 
-void get_four_neighbor(int loc, int* neighbor) //neighbor length maximum is 4
-{
-        if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)==0){
-            neighbor[0]=loc+1; neighbor[1]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
-            neighbor[0]=loc-1; neighbor[1]=loc+1; neighbor[2]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
-            neighbor[0]=loc-1; neighbor[1]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)> 0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==0){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc+1; neighbor[2]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)>0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+1; neighbor[3]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)>0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+ARRAY_SIZE;
-        }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==0){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc+1;
-        }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+1;
-        }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
-            neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1;
-        }
-}
+// void get_neighbor(int loc, int* neighbor) //neighbor length maximum is 4
+// {
+//         if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)==0){
+//             neighbor[0]=loc+1; neighbor[1]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-1; neighbor[1]=loc+1; neighbor[2]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)==0 && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-1; neighbor[1]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)> 0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==0){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc+1; neighbor[2]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)>0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+1; neighbor[3]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)>0 && (loc / ARRAY_SIZE)<(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+ARRAY_SIZE;
+//         }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==0){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc+1;
+//         }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)>0 && (loc % ARRAY_SIZE)<(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1; neighbor[2]=loc+1;
+//         }else if((loc / ARRAY_SIZE)==(ARRAY_SIZE-1) && (loc % ARRAY_SIZE)==(ARRAY_SIZE-1)){
+//             neighbor[0]=loc-ARRAY_SIZE; neighbor[1]=loc-1;
+//         }
+// }
 
 bool label_neighbor(int result[], int subsetNumber){
     bool hasNeighbor = false;
     for(int i=0; i<64; i++){
         if(result[i]==subsetNumber){
             int neighbor[8]={-1,-1,-1,-1,-1,-1,-1,-1};
-            get_eight_neighbor(i, neighbor);
+            get_neighbor(i, neighbor);
             for(int i=0; i<8;i++){
                 if(neighbor[i] != -1 && result[neighbor[i]] == WAITTOCHECK){
                     result[neighbor[i]]=NEIGHBOR;
@@ -1620,25 +1532,6 @@ void find_largestSubset(int testset[], int testsetLen, int* maxSubsetLen, int* l
     select_largest_subset(testset, testsetLen, result, subsetNumber, maxSubsetLen, largestSubset);
 }
 
-void clear_zscore_weight() {
-    for(int i=0; i<64; i++){
-        zscoreWeight[i]=false;
-    }
-}
-
-bool check_neighbor_zscore_weight(int index) {
-    int neighbor[4]={-1,-1,-1,-1};
-    get_four_neighbor(index, neighbor);
-    for(int i=0; i<4;i++){
-        if (neighbor[i] != -1) {
-            if (zscoreWeight[neighbor[i]]) {
-                return true;
-            }
-        }
-    }
-    return false;
-}
-
 void get_largest_subset(int* largestSubset, int* maxSubsetLen){
     int testset[64]={0};
     int pixelCount=0;
@@ -1648,17 +1541,22 @@ void get_largest_subset(int* largestSubset, int* maxSubsetLen){
             pixelCount++;
             zscoreWeight[i]=true;
         } else if (zscore[i] > zscore_threshold_low) {
-            if (zscoreWeight[i] || check_neighbor_zscore_weight(i)) {
+            if (zscoreWeight[i] == true) {
                 testset[pixelCount]=i;
                 pixelCount++;
-                zscoreWeight[i]=true;
             }
         } else {
-            zscoreWeight[i]=false;
+                zscoreWeight[i]=false;
         }
     }
     testset[pixelCount] = BOUNDARY;
-
+    if(pixelCount == 0){
+        roll = (float)(MAXRANGE/2);
+        pitch = (float)(MAXRANGE/2);
+        // return false;
+    }
+    // int* largestSubset;
+    // int maxSubsetLen = 0;
     find_largestSubset(testset, pixelCount, maxSubsetLen, largestSubset);
 
     // If subset only has one pixel higher than zscore threshold, it will be consideredd as a noise.
@@ -1681,54 +1579,12 @@ void get_largest_subset(int* largestSubset, int* maxSubsetLen){
 //     y_weight_coordinate = r_pixelIndex / 8;
 // }
 
-void get_filtered_xy(int* largestSubset, int maxSubsetLen) {
-
-    float x_weight_zscore_sum = 0.0f;
-    float y_weight_zscore_sum = 0.0f;
-    float zscore_sum = 0.0f;
-    uint8_t low_zscore_length = 0;
-
-    float xh_weight_zscore_sum = 0.0f;
-    float yh_weight_zscore_sum = 0.0f;
-    float zscore_sum_h = 0.0f;
-    uint8_t hot_zscore_length = 0;
-
-    for(int i=0; i<maxSubsetLen; i++) {
-        float _zscore = zscore[largestSubset[i]];
-        if (_zscore > zscore_threshold_hot) {
-            zscore_sum_h += _zscore;
-            hot_zscore_length += 1;
-        } else if (_zscore > zscore_threshold_low) {
-            zscore_sum += _zscore;
-            low_zscore_length += 1;
-        }
-    }
-
-    for(int i=0; i<maxSubsetLen; i++) {
-        int _x = largestSubset[i] % 8;
-        int _y = largestSubset[i] / 8;
-        float _zscore = zscore[largestSubset[i]];
-        if (_zscore > zscore_threshold_hot) {
-            xh_weight_zscore_sum += _x * _zscore / zscore_sum_h;
-            yh_weight_zscore_sum += _y * _zscore / zscore_sum_h;
-        } else if (_zscore > zscore_threshold_low) {
-            x_weight_zscore_sum += _x * _zscore / zscore_sum;
-            y_weight_zscore_sum += _y * _zscore / zscore_sum;
-        }
-    }
-
-    if (hot_zscore_length > 0) {
-        xh_weight_coordinate = xh_weight_zscore_sum;
-        yh_weight_coordinate = yh_weight_zscore_sum;
-    }
-
-    if (low_zscore_length > 0) {
-        x_weight_coordinate = x_weight_zscore_sum;
-        y_weight_coordinate = y_weight_zscore_sum;
-    }
-}
-
 void get_xy(int* largestSubset, int maxSubsetLen) {
+    if (maxSubsetLen == 0) {
+        x_weight_coordinate = -1.0;
+        y_weight_coordinate = -1.0;
+        return;
+    }
 
     float x_weight_zscore_sum = 0.0f;
     float y_weight_zscore_sum = 0.0f;
@@ -1750,20 +1606,20 @@ void get_xy(int* largestSubset, int maxSubsetLen) {
     y_weight_coordinate = y_weight_zscore_sum;
 }
 
-// void get_total_heat(int* largestSubset, int maxSubsetLen) {
-//     if (maxSubsetLen == 0) {
-//         z_total_heat = -1;
-//         return;
-//     }
+void get_total_heat(int* largestSubset, int maxSubsetLen) {
+    if (maxSubsetLen == 0) {
+        z_total_heat = -1;
+        return;
+    }
 
-//     float zscore_sum = 0.0f;
-//     for(int i=0; i<maxSubsetLen; i++) {
-//         float _zscore = zscore[largestSubset[i]];
-//         zscore_sum += _zscore;
-//     }
-//     // z_total_heat = sqrtf(zscore_sum);
-//     z_total_heat = (int)(zscore_sum*100);
-// }
+    float zscore_sum = 0.0f;
+    for(int i=0; i<maxSubsetLen; i++) {
+        float _zscore = zscore[largestSubset[i]];
+        zscore_sum += _zscore;
+    }
+    // z_total_heat = sqrtf(zscore_sum);
+    z_total_heat = (int)(zscore_sum*100);
+}
 
 static const DeckDriver vl53l0x_deck = {
   .vid = 0xBC,
@@ -1784,36 +1640,27 @@ PARAM_GROUP_STOP(deck)
 PARAM_GROUP_START(zscore)
 PARAM_ADD(PARAM_FLOAT, thre_high, &zscore_threshold_high)
 PARAM_ADD(PARAM_FLOAT, thre_low, &zscore_threshold_low)
-PARAM_ADD(PARAM_FLOAT, thre_hot, &zscore_threshold_hot)
-PARAM_ADD(PARAM_UINT8, zcal, &zcal)
-PARAM_ADD(PARAM_UINT8, iscal, &isCalibrate)
-PARAM_ADD(PARAM_UINT8, checkcal, &checkCalibrate)
 PARAM_GROUP_STOP(zscore)
 
 LOG_GROUP_START(range)
 LOG_ADD(LOG_UINT16, zrange, &range_last)
 LOG_ADD(LOG_UINT16, range_down, &range_last_down)
-LOG_ADD(LOG_UINT16, range_front_l, &range_last_front_l)
-LOG_ADD(LOG_UINT16, range_front_r, &range_last_front_r)
+LOG_ADD(LOG_UINT16, range_front, &range_last_front)
 // LOG_ADD(LOG_UINT16, range_top, &range_last_top)
 LOG_GROUP_STOP(range)
 
 LOG_GROUP_START(gridEye)
-// LOG_ADD(LOG_FLOAT, roomTemp, &roomTemp)
+LOG_ADD(LOG_FLOAT, roomTemp, &roomTemp)
 LOG_ADD(LOG_UINT32, yellowGroupH, &yellowGroupH)
 LOG_ADD(LOG_UINT32, yellowGroupL, &yellowGroupL)
 LOG_ADD(LOG_UINT32, orangeGroupH, &orangeGroupH)
 LOG_ADD(LOG_UINT32, orangeGroupL, &orangeGroupL)
-LOG_ADD(LOG_UINT32, redGroupH, &redGroupH)
-LOG_ADD(LOG_UINT32, redGroupL, &redGroupL)
 LOG_GROUP_STOP(gridEye)
 
 LOG_GROUP_START(gridEyeXYZ)
 LOG_ADD(LOG_FLOAT, xw, &x_weight_coordinate)
 LOG_ADD(LOG_FLOAT, yw, &y_weight_coordinate)
-LOG_ADD(LOG_FLOAT, xh, &xh_weight_coordinate)
-LOG_ADD(LOG_FLOAT, yh, &yh_weight_coordinate)
-// LOG_ADD(LOG_INT16, zh, &z_total_heat)
+LOG_ADD(LOG_INT16, zh, &z_total_heat)
 LOG_ADD(LOG_INT16, zMax, &z_max)
 LOG_ADD(LOG_INT16, zMin, &z_min)
 LOG_GROUP_STOP(gridEyeXYZ)

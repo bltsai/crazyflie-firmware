@@ -264,6 +264,15 @@ static void pamotionTask(void *param)
     // (might need to be changed if mounted diffrently)
     int16_t accpx = -currentMotion.deltaY;
     int16_t accpy = -currentMotion.deltaX;
+    // int16_t accpx = currentMotion.deltaX;
+    // int16_t accpy = -currentMotion.deltaY;
+    // int16_t accpx = currentMotion.deltaX;
+    // int16_t accpy = currentMotion.deltaY;
+    // int16_t accpx = -currentMotion.deltaX;
+    // int16_t accpy = currentMotion.deltaY;
+
+
+
 
     // Outlier removal
     if (abs(accpx) < OULIER_LIMIT && abs(accpy) < OULIER_LIMIT) {

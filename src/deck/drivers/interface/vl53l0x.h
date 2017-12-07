@@ -30,6 +30,7 @@
 #include "stabilizer_types.h"
 #include "deck_core.h"
 
+#define TCAADDR 0x70
 
 #define VL53L0X_DEFAULT_ADDRESS 0b0101001
 
@@ -242,3 +243,27 @@ uint16_t vl53l0xReadRangeContinuousMillimeters(void);
 uint16_t vl53l0xReadRangeSingleMillimeters(void);
 
 #endif /* _VL53L0X_H_ */
+
+#define GRIDEYE_DEFAULT_ADDRESS 0b1101000
+
+#define GRIDEYE_TASK_FREQ 100
+
+#define GRIDEYE_ADDR_AUTO_INC 0x80
+
+#define PIXEL0                0x00
+
+#define GRIDEYE_ADDR_BG_TEMP  0x0E
+
+#define THRESHOLD_LEVEL1      2
+#define THRESHOLD_LEVEL2      3
+#define RED                   4
+#define ORANGE                3
+#define YELLOW                2
+#define WHITE                 1
+
+#define ARRAY_SIZE       8
+#define WAITTOCHECK     90
+#define CHECKED         91
+#define NEIGHBOR        92
+#define BOUNDARY        99
+

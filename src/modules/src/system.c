@@ -55,6 +55,7 @@
 #include "usblink.h"
 #include "mem.h"
 #include "proximity.h"
+#include "led_indicator.h"
 #include "watchdog.h"
 #include "queuemonitor.h"
 #include "buzzer.h"
@@ -164,6 +165,8 @@ void systemTask(void *arg)
   proximityInit();
 #endif
 
+  ledIndicatorInit();
+
   //Test the modules
   pass &= systemTest();
   pass &= configblockTest();
@@ -181,8 +184,9 @@ void systemTask(void *arg)
     selftestPassed = 1;
     systemStart();
     soundSetEffect(SND_STARTUP);
-    ledseqRun(SYS_LED, seq_alive);
-    ledseqRun(LINK_LED, seq_testPassed);
+    //ledseqRun(SYS_LED, seq_alive);
+    //ledseqRun(LINK_LED, seq_testPassed);
+    ledSet(LED_BLUE_L, 0);
   }
   else
   {

@@ -56,7 +56,7 @@ static float expCoeff;
 #define CORRIDOR_HEIGHT       2650
 
 #define RAW_DATA_FRAME_NUM    1
-#define BG_FRAME_NUM          100
+#define BG_FRAME_NUM          20
 #define PEAK_THREHOLD         1.5f
 
 #define LEFT_UP      7
@@ -76,8 +76,7 @@ static uint16_t timeout_start_ms;
 
 uint16_t range_last = 0;
 uint16_t range_last_down = 0;
-uint16_t range_last_front_l = 0;
-uint16_t range_last_front_r = 0;
+uint16_t range_last_front = 0;
 // uint16_t range_last_top = 0;
 
 // Record the current time to check an upcoming timeout against
@@ -164,7 +163,6 @@ static uint8_t  bgFrameIndex = 0;
 static float    bgData[64*BG_FRAME_NUM] = {0};
 
 static bool isCalibrate = false;
-static bool checkCalibrate = false;
 static float avgCal[64] = {0};
 static float squareAvg[64] = {0};
 static float stdCal[64] = {0};
@@ -182,9 +180,10 @@ static bool zscoreWeight[64] = {false};
 
 static float zscore_threshold_high = 10.0f;
 static float zscore_threshold_low = 5.0f;
-static float zscore_threshold_hot = 35.0f;
-static float zscore_threshold_recal = 10.0f;
-static bool zcal = true;
+static float zscore_threshold_hot = 32.0f;
+static float zscore_threshold_recal = 2.5f;
+
+static bool isForcedCal = false;
 
 static void reset_log_variable(uint8_t* color);
 static void clear_zscore_weight();
@@ -222,7 +221,7 @@ void vl53l0xInit(DeckInfo* info)
   i2cdevInit(I2C1_DEV);
   I2Cx = I2C1_DEV;
   devAddr = VL53L0X_DEFAULT_ADDRESS;
-  i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
+  i2cdevWriteByte(I2Cx, TCAADDR, 0x80, 0x80);
   xTaskCreate(vl53l0xTask, VL53_TASK_NAME, VL53_TASK_STACKSIZE, NULL, VL53_TASK_PRI, NULL);
 
   // pre-compute constant in the measurement noise model for kalman
@@ -239,7 +238,7 @@ bool vl53l0xTest(void)
     return false;
        // Measurement noise model
   int addresses[] = {0x80, 0x10, 0x04};
-  for (int i=0; i<3; i++){
+  for (int i=0; i<2; i++){
     i2cdevWriteByte(I2Cx, TCAADDR, addresses[i], addresses[i]);
     testStatus  = vl53l0xTestConnection();
     testStatus &= vl53l0xInitSensor(true);
@@ -253,7 +252,7 @@ void vl53l0xTask(void* arg)
   systemWaitStart();
   TickType_t xLastWakeTime;
   int addresses[] = {0x80, 0x10, 0x04}; // 0x80 down, 0x10 front, 0x04 top
-  for (int i=0; i<3; i++){
+  for (int i=0; i<2; i++){
     i2cdevWriteByte(I2Cx, TCAADDR, addresses[i], addresses[i]);
     vl53l0xSetVcselPulsePeriod(VcselPeriodPreRange, 18);
     vl53l0xSetVcselPulsePeriod(VcselPeriodFinalRange, 14);
@@ -266,9 +265,9 @@ void vl53l0xTask(void* arg)
     i2cdevWriteByte(I2Cx, TCAADDR, 0x80, 0x80);
     range_last_down = vl53l0xReadRangeContinuousMillimeters();
     i2cdevWriteByte(I2Cx, TCAADDR, 0x10, 0x10);
-    range_last_front_l = vl53l0xReadRangeContinuousMillimeters();
-    i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
-    range_last_front_r = vl53l0xReadRangeContinuousMillimeters();
+    range_last_front = vl53l0xReadRangeContinuousMillimeters();
+    // i2cdevWriteByte(I2Cx, TCAADDR, 0x04, 0x04);
+    // range_last_top = vl53l0xReadRangeContinuousMillimeters();
 
     if (range_last_down < RANGE_OUTLIER_LIMIT) {
       range_last = range_last_down;
@@ -309,18 +308,6 @@ void vl53l0xTask(void* arg)
         }
         bgFrameIndex = (bgFrameIndex+1)%BG_FRAME_NUM;
 
-    } else if (!checkCalibrate) {
-        for(int i=0;i<64;i++){
-            rawData[i] = ((data[i*2+1] << 8) | data[i*2]) * 0.25f;
-        }
-        zscoreCalculation();
-
-        if (z_max > 800 || z_min < -800) { // ensure that the initial zscore is between 8 and -8.
-            isCalibrate = false;
-        } else {
-            checkCalibrate = true;
-        }
-
     } else {
         rawDataFrameIndex %= RAW_DATA_FRAME_NUM;
         for(int i=(64*rawDataFrameIndex);i<(64*(rawDataFrameIndex+1));i++){
@@ -350,7 +337,7 @@ void vl53l0xTask(void* arg)
             findGroup(rColor);
         } else {
             clear_zscore_weight();
-            if (zcal && z_max < zscore_threshold_recal) {
+            if (z_max < zscore_threshold_recal || isForcedCal == true) {
                 copy_to_bgData();
                 fast_calibration();
                 bgFrameIndex = (bgFrameIndex+1)%BG_FRAME_NUM;
@@ -1378,7 +1365,7 @@ void calibration() {
 }
 
 void zscoreCalculation() {
-  float tempMax = -30.0f;
+  float tempMax = 0.0f;
   float tempMin = 30.0f;
   for(int i=0; i<64; i++) {
     float tempSum = 0;
@@ -1785,16 +1772,16 @@ PARAM_GROUP_START(zscore)
 PARAM_ADD(PARAM_FLOAT, thre_high, &zscore_threshold_high)
 PARAM_ADD(PARAM_FLOAT, thre_low, &zscore_threshold_low)
 PARAM_ADD(PARAM_FLOAT, thre_hot, &zscore_threshold_hot)
-PARAM_ADD(PARAM_UINT8, zcal, &zcal)
-PARAM_ADD(PARAM_UINT8, iscal, &isCalibrate)
-PARAM_ADD(PARAM_UINT8, checkcal, &checkCalibrate)
 PARAM_GROUP_STOP(zscore)
+
+PARAM_GROUP_START(calibrate)
+PARAM_ADD(PARAM_UINT8, isForcedCal, &isForcedCal)
+PARAM_GROUP_STOP(calibrate)
 
 LOG_GROUP_START(range)
 LOG_ADD(LOG_UINT16, zrange, &range_last)
 LOG_ADD(LOG_UINT16, range_down, &range_last_down)
-LOG_ADD(LOG_UINT16, range_front_l, &range_last_front_l)
-LOG_ADD(LOG_UINT16, range_front_r, &range_last_front_r)
+LOG_ADD(LOG_UINT16, range_front, &range_last_front)
 // LOG_ADD(LOG_UINT16, range_top, &range_last_top)
 LOG_GROUP_STOP(range)
 

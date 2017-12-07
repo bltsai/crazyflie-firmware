@@ -208,7 +208,7 @@ bool ledseqTest(void)
   bool status;
 
   status = isInit & ledTest();
-  ledseqEnable(true);
+  //ledseqEnable(true);
   return status;
 }
 
@@ -264,6 +264,11 @@ static void runLedseq( xTimerHandle xTimer )
   bool leave=false;
 
   if (!ledseqEnabled)
+    ledSet(LED_RED_L, 0);
+    ledSet(LED_RED_R, 0);
+    ledSet(LED_GREEN_L, 0);
+    ledSet(LED_GREEN_R, 0);
+    ledSet(LED_BLUE_L, 0);
     return;
 
   while(!leave) {
@@ -316,7 +321,7 @@ static void updateActive(led_t led)
   int prio;
 
   activeSeq[led]=LEDSEQ_STOP;
-  ledSet(led, false);
+  //ledSet(led, false);
 
   for(prio=0;prio<SEQ_NUM;prio++)
   {

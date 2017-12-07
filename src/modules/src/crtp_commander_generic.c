@@ -139,8 +139,14 @@ static void zDistanceDecoder(setpoint_t *setpoint, uint8_t type, const void *dat
   setpoint->mode.roll = modeAbs;
   setpoint->mode.pitch = modeAbs;
 
+  setpoint->attitudeRate.roll = 0;
+  setpoint->attitudeRate.pitch = 0;
+
   setpoint->attitude.roll = values->roll;
   setpoint->attitude.pitch = values->pitch;
+
+  setpoint->velocity.x = 0;
+  setpoint->velocity.y = 0;
 }
 
 /* cppmEmuDecoder
